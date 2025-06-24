@@ -1,0 +1,14 @@
+# Fixed requirements.txt compatible with Python 3.13
+dash==2.17.1
+plotly==5.17.0
+pandas>=2.2.0
+numpy>=1.26.0
+networkx==3.2.1
+scikit-learn>=1.4.0
+google-cloud-bigquery==3.13.0
+gunicorn==21.2.0
+python-dotenv==1.0.0
+
+# Additional dependencies that might be needed
+flask>=2.3.0
+werkzeug>=2.3.0

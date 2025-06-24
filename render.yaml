@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: semantic-visualization
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:server --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.7
+      - key: GOOGLE_CLOUD_PROJECT_ID
+        sync: false
+      - key: GOOGLE_CLOUD_SERVICE_ACCOUNT_TYPE
+        sync: false
+      - key: GOOGLE_CLOUD_PRIVATE_KEY_ID
+        sync: false
+      - key: GOOGLE_CLOUD_PRIVATE_KEY
+        sync: false
+      - key: GOOGLE_CLOUD_CLIENT_EMAIL
+        sync: false
+      - key: GOOGLE_CLOUD_CLIENT_ID
+        sync: false
+    scaling:
+      minInstances: 1
+      maxInstances: 3
+    disk:
+      name: semantic-viz-disk
+      sizeGB: 1
+      mountPath: /tmp
