@@ -106,6 +106,36 @@ def fetch_data_from_bigquery(limit=1000):
         logger.error(f"Error fetching data: {e}")
         raise
 
+def filter_by_similarity(data, embeddings, similarity_threshold=0.7):
+    """Filter data points based on similarity to others"""
+    try:
+        logger.info(f"Filtering data with similarity threshold {similarity_threshold}...")
+        
+        # Calculate similarity matrix
+        similarity_matrix = cosine_similarity_matrix(embeddings)
+        
+        # For each point, count how many other points it's similar to
+        similar_counts = []
+        for i in range(len(similarity_matrix)):
+            # Count similarities above threshold (excluding self)
+            similar_count = np.sum(similarity_matrix[i] > similarity_threshold) - 1
+            similar_counts.append(similar_count)
+        
+        # Add similarity info to data
+        filtered_data = []
+        for i, item in enumerate(data):
+            item_copy = item.copy()
+            item_copy['similar_count'] = similar_counts[i]
+            item_copy['max_similarity'] = float(np.max(similarity_matrix[i][np.arange(len(similarity_matrix)) != i]))
+            filtered_data.append(item_copy)
+        
+        logger.info(f"Added similarity metrics to {len(filtered_data)} items")
+        return filtered_data, similarity_matrix
+        
+    except Exception as e:
+        logger.error(f"Error filtering by similarity: {e}")
+        raise
+
 def process_embeddings(data, method='umap', n_components=2):
     """Process embeddings using dimensionality reduction"""
     try:
@@ -173,7 +203,7 @@ app.layout = dbc.Container([
                                 value=1000,
                                 clearable=False
                             )
-                        ], width=6),
+                        ], width=4),
                         
                         dbc.Col([
                             dbc.Label("Visualization Method:"),
@@ -187,7 +217,28 @@ app.layout = dbc.Container([
                                 value='umap',
                                 clearable=False
                             )
-                        ], width=6)
+                        ], width=4),
+                        
+                        dbc.Col([
+                            dbc.Label("Similarity Threshold:"),
+                            html.Div([
+                                dcc.Slider(
+                                    id='similarity-slider',
+                                    min=0.5,
+                                    max=0.95,
+                                    step=0.01,
+                                    value=0.7,
+                                    marks={
+                                        0.5: '0.5',
+                                        0.6: '0.6',
+                                        0.7: '0.7',
+                                        0.8: '0.8',
+                                        0.9: '0.9'
+                                    },
+                                    tooltip={"placement": "bottom", "always_visible": True}
+                                )
+                            ])
+                        ], width=4)
                     ]),
                     
                     html.Br(),
@@ -199,6 +250,13 @@ app.layout = dbc.Container([
                                 id="load-button", 
                                 color="primary", 
                                 className="me-2"
+                            ),
+                            dbc.Button(
+                                "Apply Similarity Filter", 
+                                id="filter-button", 
+                                color="info", 
+                                className="me-2",
+                                disabled=True
                             ),
                             dbc.Button(
                                 "Download Data", 
@@ -257,7 +315,8 @@ app.layout = dbc.Container([
     [Output('scatter-plot', 'figure'),
      Output('stored-data', 'children'),
      Output('status-message', 'children'),
-     Output('download-button', 'disabled')],
+     Output('download-button', 'disabled'),
+     Output('filter-button', 'disabled')],
     [Input('load-button', 'n_clicks')],
     [State('limit-dropdown', 'value'),
      State('method-dropdown', 'value')]
@@ -270,7 +329,7 @@ def update_plot(n_clicks, limit, method):
             xaxis_title="Dimension 1",
             yaxis_title="Dimension 2"
         )
-        return empty_fig, "", "", True
+        return empty_fig, "", "", True, True
     
     try:
         # Fetch and process data
@@ -282,6 +341,7 @@ def update_plot(n_clicks, limit, method):
         # Store data globally
         app_data['processed_data'] = processed_data
         app_data['embeddings'] = embeddings
+        app_data['original_data'] = raw_data
         
         # Create scatter plot
         df = pd.DataFrame(processed_data)
@@ -322,7 +382,7 @@ def update_plot(n_clicks, limit, method):
             color="success"
         )
         
-        return fig, json.dumps(processed_data), success_status, False
+        return fig, json.dumps(processed_data), success_status, False, False
         
     except Exception as e:
         error_fig = go.Figure()
@@ -334,7 +394,95 @@ def update_plot(n_clicks, limit, method):
         
         error_status = dbc.Alert(f"Error loading data: {str(e)}", color="danger")
         
-        return error_fig, "", error_status, True
+        return error_fig, "", error_status, True, True
+
+@app.callback(
+    [Output('scatter-plot', 'figure', allow_duplicate=True),
+     Output('stored-data', 'children', allow_duplicate=True),
+     Output('status-message', 'children', allow_duplicate=True)],
+    [Input('filter-button', 'n_clicks')],
+    [State('similarity-slider', 'value'),
+     State('method-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def apply_similarity_filter(n_clicks, similarity_threshold, method):
+    if n_clicks is None or 'processed_data' not in app_data:
+        return dash.no_update, dash.no_update, dash.no_update
+    
+    try:
+        # Get stored data
+        original_data = app_data['original_data']
+        embeddings = app_data['embeddings']
+        
+        # Apply similarity filtering
+        filtered_data, similarity_matrix = filter_by_similarity(
+            original_data, embeddings, similarity_threshold
+        )
+        
+        # Re-process embeddings for visualization
+        processed_data, _ = process_embeddings(filtered_data, method)
+        
+        # Update stored data
+        app_data['processed_data'] = processed_data
+        app_data['similarity_matrix'] = similarity_matrix
+        
+        # Create updated scatter plot
+        df = pd.DataFrame(processed_data)
+        
+        fig = go.Figure()
+        
+        # Color by similarity count or max similarity
+        color_values = [item.get('similar_count', 0) for item in processed_data]
+        
+        fig.add_trace(go.Scatter(
+            x=df['x'],
+            y=df['y'],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color=color_values,
+                colorscale='Plasma',
+                opacity=0.7,
+                line=dict(width=0.5, color='white'),
+                colorbar=dict(title="Similar Items Count"),
+                cmin=0,
+                cmax=max(color_values) if color_values else 1
+            ),
+            text=df['name'],
+            hovertemplate='<b>%{text}</b><br>' +
+                         'ID: %{customdata[0]}<br>' +
+                         'Description: %{customdata[1]}<br>' +
+                         'Similar Items: %{customdata[2]}<br>' +
+                         'Max Similarity: %{customdata[3]:.3f}<br>' +
+                         '<extra></extra>',
+            customdata=np.column_stack((
+                df['id'], 
+                df['description'],
+                [item.get('similar_count', 0) for item in processed_data],
+                [item.get('max_similarity', 0) for item in processed_data]
+            )),
+            name='Items'
+        ))
+        
+        fig.update_layout(
+            title=f"Semantic Visualization ({method.upper()}) - Similarity ≥ {similarity_threshold:.2f}",
+            xaxis_title=f"{method.upper()} Dimension 1",
+            yaxis_title=f"{method.upper()} Dimension 2",
+            hovermode='closest',
+            template='plotly_white',
+            height=600
+        )
+        
+        success_status = dbc.Alert(
+            f"Applied similarity filter ≥ {similarity_threshold:.2f}. Points colored by similar item count.", 
+            color="info"
+        )
+        
+        return fig, json.dumps(processed_data), success_status
+        
+    except Exception as e:
+        error_status = dbc.Alert(f"Error applying similarity filter: {str(e)}", color="danger")
+        return dash.no_update, dash.no_update, error_status
 
 @app.callback(
     Output('item-details', 'children'),
@@ -358,6 +506,12 @@ def update_item_details(clickData, stored_data):
             html.Hr(),
             html.P(f"Coordinates: ({item['x']:.3f}, {item['y']:.3f})", className="small text-muted")
         ]
+        
+        # Add similarity info if available
+        if 'similar_count' in item:
+            details.insert(-1, html.P(f"Similar Items: {item['similar_count']}", className="small text-info"))
+        if 'max_similarity' in item:
+            details.insert(-1, html.P(f"Max Similarity: {item['max_similarity']:.3f}", className="small text-info"))
         
         if item.get('image_url'):
             details.insert(2, html.Img(
